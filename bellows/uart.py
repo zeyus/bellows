@@ -18,38 +18,29 @@ LOGGER = logging.getLogger(__name__)
 RESET_TIMEOUT = 5
 
 
-class Gateway(asyncio.Protocol):
-    def __init__(self, application, connected_future=None, connection_done_future=None):
-        self._application = application
+class Gateway(zigpy.serial.SerialProtocol):
+    def __init__(self, api, connection_done_future=None):
+        super().__init__()
+        self._api = api
 
         self._reset_future = None
         self._startup_reset_future = None
-        self._connected_future = connected_future
         self._connection_done_future = connection_done_future
-
-        self._transport = None
-
-    def close(self):
-        self._transport.close()
-
-    def connection_made(self, transport):
-        """Callback when the uart is connected"""
-        self._transport = transport
-        if self._connected_future is not None:
-            self._connected_future.set_result(True)
 
     async def send_data(self, data: bytes) -> None:
         await self._transport.send_data(data)
 
     def data_received(self, data):
         """Callback when there is data received from the uart"""
-        self._application.frame_received(data)
+
+        # We intentionally do not call `SerialProtocol.data_received`
+        self._api.frame_received(data)
 
     def reset_received(self, code: t.NcpResetCode) -> None:
         """Reset acknowledgement frame receive handler"""
-        # not a reset we've requested. Signal application reset
+        # not a reset we've requested. Signal api reset
         if code is not t.NcpResetCode.RESET_SOFTWARE:
-            self._application.enter_failed_state(code)
+            self._api.enter_failed_state(code)
             return
 
         if self._reset_future and not self._reset_future.done():
@@ -61,7 +52,7 @@ class Gateway(asyncio.Protocol):
 
     def error_received(self, code: t.NcpResetCode) -> None:
         """Error frame receive handler."""
-        self._application.enter_failed_state(code)
+        self._api.enter_failed_state(code)
 
     async def wait_for_startup_reset(self) -> None:
         """Wait for the first reset frame on startup."""
@@ -77,12 +68,9 @@ class Gateway(asyncio.Protocol):
         """Delete reset future."""
         self._reset_future = None
 
-    def eof_received(self):
-        """Server gracefully closed its side of the connection."""
-        self.connection_lost(ConnectionResetError("Remote server closed connection"))
-
     def connection_lost(self, exc):
         """Port was closed unexpectedly."""
+        super().connection_lost(exc)
 
         LOGGER.debug("Connection lost: %r", exc)
         reason = exc or ConnectionResetError("Remote server closed connection")
@@ -102,12 +90,7 @@ class Gateway(asyncio.Protocol):
             self._reset_future.set_exception(reason)
             self._reset_future = None
 
-        if exc is None:
-            LOGGER.debug("Closed serial connection")
-            return
-
-        LOGGER.error("Lost serial connection: %r", exc)
-        self._application.connection_lost(exc)
+        self._api.connection_lost(exc)
 
     async def reset(self):
         """Send a reset frame and init internal state."""
@@ -126,13 +109,12 @@ class Gateway(asyncio.Protocol):
             return await self._reset_future
 
 
-async def _connect(config, application):
+async def _connect(config, api):
     loop = asyncio.get_event_loop()
 
-    connection_future = loop.create_future()
     connection_done_future = loop.create_future()
 
-    gateway = Gateway(application, connection_future, connection_done_future)
+    gateway = Gateway(api, connection_done_future)
     protocol = AshProtocol(gateway)
 
     if config[zigpy.config.CONF_DEVICE_FLOW_CONTROL] is None:
@@ -149,25 +131,25 @@ async def _connect(config, application):
         rtscts=rtscts,
     )
 
-    await connection_future
+    await gateway.wait_until_connected()
 
     thread_safe_protocol = ThreadsafeProxy(gateway, loop)
     return thread_safe_protocol, connection_done_future
 
 
-async def connect(config, application, use_thread=True):
+async def connect(config, api, use_thread=True):
     if use_thread:
-        application = ThreadsafeProxy(application, asyncio.get_event_loop())
+        api = ThreadsafeProxy(api, asyncio.get_event_loop())
         thread = EventLoopThread()
         await thread.start()
         try:
             protocol, connection_done = await thread.run_coroutine_threadsafe(
-                _connect(config, application)
+                _connect(config, api)
             )
         except Exception:
             thread.force_stop()
             raise
         connection_done.add_done_callback(lambda _: thread.force_stop())
     else:
-        protocol, _ = await _connect(config, application)
+        protocol, _ = await _connect(config, api)
     return protocol

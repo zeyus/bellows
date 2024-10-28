@@ -12,6 +12,8 @@ import sys
 from typing import Any, Callable, Generator
 import urllib.parse
 
+from bellows.ash import NcpFailure
+
 if sys.version_info[:2] < (3, 11):
     from async_timeout import timeout as asyncio_timeout  # pragma: no cover
 else:
@@ -55,13 +57,14 @@ class EZSP:
         v14.EZSPv14.VERSION: v14.EZSPv14,
     }
 
-    def __init__(self, device_config: dict):
+    def __init__(self, device_config: dict, application: Any | None = None):
         self._config = device_config
         self._callbacks = {}
         self._ezsp_event = asyncio.Event()
         self._ezsp_version = v4.EZSPv4.VERSION
         self._gw = None
         self._protocol = None
+        self._application = application
 
         self._stack_status_listeners: collections.defaultdict[
             t.sl_Status, list[asyncio.Future]
@@ -122,24 +125,16 @@ class EZSP:
 
         await self.version()
 
-    @classmethod
-    async def initialize(cls, zigpy_config: dict) -> EZSP:
-        """Return initialized EZSP instance."""
-        ezsp = cls(zigpy_config[conf.CONF_DEVICE])
-        await ezsp.connect(use_thread=zigpy_config[conf.CONF_USE_THREAD])
-
-        try:
-            await ezsp.startup_reset()
-        except Exception:
-            ezsp.close()
-            raise
-
-        return ezsp
-
     async def connect(self, *, use_thread: bool = True) -> None:
         assert self._gw is None
         self._gw = await bellows.uart.connect(self._config, self, use_thread=use_thread)
-        self._protocol = v4.EZSPv4(self.handle_callback, self._gw)
+
+        try:
+            self._protocol = v4.EZSPv4(self.handle_callback, self._gw)
+            await self.startup_reset()
+        except Exception:
+            await self.disconnect()
+            raise
 
     async def reset(self):
         LOGGER.debug("Resetting EZSP")
@@ -179,10 +174,10 @@ class EZSP:
             ver,
         )
 
-    def close(self):
+    async def disconnect(self):
         self.stop_ezsp()
         if self._gw:
-            self._gw.close()
+            await self._gw.disconnect()
             self._gw = None
 
     async def _command(self, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -264,23 +259,12 @@ class EZSP:
 
     def connection_lost(self, exc):
         """Lost serial connection."""
-        LOGGER.debug(
-            "%s connection lost unexpectedly: %s",
-            self._config[conf.CONF_DEVICE_PATH],
-            exc,
-        )
-        self.enter_failed_state(f"Serial connection loss: {exc!r}")
+        if self._application is not None:
+            self._application.connection_lost(exc)
 
-    def enter_failed_state(self, error):
-        """UART received error frame."""
-        if len(self._callbacks) > 1:
-            LOGGER.error("NCP entered failed state. Requesting APP controller restart")
-            self.close()
-            self.handle_callback("_reset_controller_application", (error,))
-        else:
-            LOGGER.info(
-                "NCP entered failed state. No application handler registered, ignoring..."
-            )
+    def enter_failed_state(self, code: t.NcpResetCode) -> None:
+        """UART received reset code."""
+        self.connection_lost(NcpFailure(code=code))
 
     def __getattr__(self, name: str) -> Callable:
         if name not in self._protocol.COMMANDS:

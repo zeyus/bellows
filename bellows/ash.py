@@ -130,6 +130,12 @@ class NcpFailure(AshException):
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__}(code={self.code})>"
 
+    def __eq__(self, other: object) -> bool | NotImplemented:
+        if not isinstance(other, NcpFailure):
+            return NotImplemented
+
+        return self.code == other.code
+
 
 class AshFrame(abc.ABC, BaseDataclassMixin):
     MASK: t.uint8_t
@@ -368,7 +374,7 @@ class AshProtocol(asyncio.Protocol):
         self._transport = transport
         self._ezsp_protocol.connection_made(self)
 
-    def connection_lost(self, exc):
+    def connection_lost(self, exc: Exception | None) -> None:
         self._transport = None
         self._cancel_pending_data_frames()
         self._ezsp_protocol.connection_lost(exc)
