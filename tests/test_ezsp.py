@@ -11,7 +11,7 @@ import zigpy.config
 from bellows import config, uart
 from bellows.ash import NcpFailure
 from bellows.exception import EzspError, InvalidCommandError
-from bellows.ezsp import EZSP, EZSP_LATEST
+from bellows.ezsp import EZSP, EZSP_LATEST, xncp
 import bellows.types as t
 
 if sys.version_info[:2] < (3, 11):
@@ -40,6 +40,9 @@ def make_ezsp(config: dict = DEVICE_CONFIG, version: int = 4):
 
     api._mock_commands = {}
     api._mock_commands["version"] = AsyncMock(return_value=[version, 0, 0])
+    api._mock_commands["customFrame"] = AsyncMock(
+        return_value=[t.EmberStatus.LIBRARY_NOT_PRESENT, b""]
+    )
     api._command = AsyncMock(side_effect=mock_command)
 
     return api
@@ -320,6 +323,7 @@ async def test_ezsp_newer_version(ezsp_f):
     (
         "mfg_board_name",
         "mfg_string",
+        "xncp_build_string",
         "value_version_info",
         "expected",
     ),
@@ -327,32 +331,44 @@ async def test_ezsp_newer_version(ezsp_f):
         (
             (b"\xfe\xff\xff\xff",),
             (b"Manufacturer\xff\xff\xff",),
+            (InvalidCommandError("XNCP is not supported"),),
             (t.EmberStatus.SUCCESS, b"\x01\x02\x03\x04\x05\x06"),
             ("Manufacturer", "0xFE", "3.4.5.6 build 513"),
         ),
         (
             (b"\xfe\xff\xff\xff",),
             (b"Manufacturer\xff\xff\xff",),
+            (InvalidCommandError("XNCP is not supported"),),
             (t.EmberStatus.ERR_FATAL, b"\x01\x02\x03\x04\x05\x06"),
             ("Manufacturer", "0xFE", None),
         ),
         (
             (b"SkyBlue v0.1\x00\xff\xff\xff",),
             (b"Nabu Casa\x00\xff\xff\xff\xff\xff\xff",),
+            (InvalidCommandError("XNCP is not supported"),),
             (t.EmberStatus.SUCCESS, b"\xbf\x00\x07\x01\x00\x00\xaa"),
             ("Nabu Casa", "SkyBlue v0.1", "7.1.0.0 build 191"),
         ),
         (
             (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",),
             (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",),
+            (InvalidCommandError("XNCP is not supported"),),
             (t.EmberStatus.SUCCESS, b"\xbf\x00\x07\x01\x00\x00\xaa"),
             (None, None, "7.1.0.0 build 191"),
         ),
         (
             (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff",),
             (b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00",),
+            (InvalidCommandError("XNCP is not supported"),),
             (t.EmberStatus.SUCCESS, b")\x01\x06\n\x03\x00\xaa"),
             (None, None, "6.10.3.0 build 297"),
+        ),
+        (
+            (b"SkyBlue v0.1\x00\xff\xff\xff",),
+            (b"Nabu Casa\x00\xff\xff\xff\xff\xff\xff",),
+            ("special build",),
+            (t.EmberStatus.SUCCESS, b"\xbf\x00\x07\x01\x00\x00\xaa"),
+            ("Nabu Casa", "SkyBlue v0.1", "7.1.0.0 build 191 (special build)"),
         ),
     ],
 )
@@ -360,6 +376,7 @@ async def test_board_info(
     ezsp_f,
     mfg_board_name: bytes,
     mfg_string: bytes,
+    xncp_build_string: str | Exception,
     value_version_info: tuple[t.EmberStatus, bytes],
     expected: tuple[str | None, str | None, str],
 ):
@@ -381,7 +398,7 @@ async def test_board_info(
                 ("getValue", t.EzspValueId.VALUE_VERSION_INFO): value_version_info,
             }
         ),
-    ):
+    ), patch.object(ezsp_f, "xncp_get_build_string", side_effect=xncp_build_string):
         mfg, brd, ver = await ezsp_f.get_board_info()
 
     assert (mfg, brd, ver) == expected
@@ -427,6 +444,28 @@ async def test_leave_network(ezsp_f):
     with patch.object(ezsp_f, "_command", new_callable=AsyncMock) as cmd_mock:
         cmd_mock.side_effect = _mock_cmd
         await ezsp_f.leaveNetwork(timeout=0.01)
+
+
+async def test_xncp_token_override(ezsp_f):
+    ezsp_f.getMfgToken = AsyncMock(return_value=[b"firmware value"])
+    ezsp_f.xncp_get_mfg_token_override = AsyncMock(return_value=b"xncp value")
+
+    # Without firmware support, the XNCP command isn't sent
+    assert (
+        await ezsp_f.get_mfg_token(t.EzspMfgTokenId.MFG_CUSTOM_EUI_64)
+    ) == b"firmware value"
+
+    # With firmware support, it is
+    ezsp_f._xncp_features |= xncp.FirmwareFeatures.MFG_TOKEN_OVERRIDES
+    assert (
+        await ezsp_f.get_mfg_token(t.EzspMfgTokenId.MFG_CUSTOM_EUI_64)
+    ) == b"xncp value"
+
+    # Tokens without overrides are still read normally
+    ezsp_f.xncp_get_mfg_token_override.side_effect = InvalidCommandError
+    assert (
+        await ezsp_f.get_mfg_token(t.EzspMfgTokenId.MFG_CUSTOM_EUI_64)
+    ) == b"firmware value"
 
 
 @pytest.mark.parametrize(
@@ -588,7 +627,8 @@ async def test_write_custom_eui64_rcp(ezsp_f):
 
 @patch.object(EZSP, "version", new_callable=AsyncMock)
 @patch.object(EZSP, "reset", new_callable=AsyncMock)
-async def test_ezsp_init_zigbeed(reset_mock, version_mock):
+@patch.object(EZSP, "get_xncp_features", new_callable=AsyncMock)
+async def test_ezsp_init_zigbeed(xncp_mock, reset_mock, version_mock):
     """Test initialize method with a received startup reset frame."""
     ezsp = make_ezsp(
         config={
@@ -609,8 +649,9 @@ async def test_ezsp_init_zigbeed(reset_mock, version_mock):
 
 @patch.object(EZSP, "version", new_callable=AsyncMock)
 @patch.object(EZSP, "reset", new_callable=AsyncMock)
+@patch.object(EZSP, "get_xncp_features", new_callable=AsyncMock)
 @patch("bellows.ezsp.NETWORK_COORDINATOR_STARTUP_RESET_WAIT", 0.01)
-async def test_ezsp_init_zigbeed_timeout(reset_mock, version_mock):
+async def test_ezsp_init_zigbeed_timeout(reset_mock, xncp_mock, version_mock):
     """Test initialize method with a received startup reset frame."""
     ezsp = make_ezsp(
         config={
