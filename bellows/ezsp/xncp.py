@@ -44,9 +44,15 @@ class XncpCommandId(t.enum16):
     SET_SOURCE_ROUTE_RSP = SET_SOURCE_ROUTE_REQ | 0x8000
     GET_MFG_TOKEN_OVERRIDE_RSP = GET_MFG_TOKEN_OVERRIDE_REQ | 0x8000
     GET_BUILD_STRING_RSP = GET_BUILD_STRING_REQ | 0x8000
-    # Hacky fix ?!
-    GET_BUILD_STRING_RSP2 = 0x0100
     GET_FLOW_CONTROL_TYPE_RSP = GET_FLOW_CONTROL_TYPE_REQ | 0x8000
+
+    # Hacky fix for specific devices?
+    GET_SUPPORTED_FEATURES_RSP_ALT = GET_SUPPORTED_FEATURES_REQ | 0x0100
+    SET_SOURCE_ROUTE_RSP_ALT = SET_SOURCE_ROUTE_REQ | 0x0100
+    GET_MFG_TOKEN_OVERRIDE_RSP_ALT = GET_MFG_TOKEN_OVERRIDE_REQ | 0x0100
+    GET_BUILD_STRING_RSP_ALT = GET_BUILD_STRING_REQ | 0x0100
+    GET_FLOW_CONTROL_TYPE_RSP_ALT = GET_FLOW_CONTROL_TYPE_REQ | 0x0100
+    
 
     UNKNOWN = 0xFFFF
 
@@ -121,7 +127,6 @@ class GetSupportedFeaturesReq(XncpCommandPayload):
 class GetSupportedFeaturesRsp(XncpCommandPayload):
     features: FirmwareFeatures
 
-
 @register_command(XncpCommandId.SET_SOURCE_ROUTE_REQ)
 class SetSourceRouteReq(XncpCommandPayload):
     destination: t.NWK
@@ -162,11 +167,26 @@ class GetFlowControlTypeReq(XncpCommandPayload):
 class GetFlowControlTypeRsp(XncpCommandPayload):
     flow_control_type: FlowControlType
 
+@register_command(XncpCommandId.GET_SUPPORTED_FEATURES_RSP_ALT)
+class GetSupportedFeaturesRspAlt(GetSupportedFeaturesRsp):
+    pass
+
+@register_command(XncpCommandId.SET_SOURCE_ROUTE_RSP_ALT)
+class SetSourceRouteRspAlt(SetSourceRouteRsp):
+    pass
+
+@register_command(XncpCommandId.GET_MFG_TOKEN_OVERRIDE_RSP_ALT)
+class GetMfgTokenOverrideRspAlt(GetMfgTokenOverrideRsp):
+    pass
+
+@register_command(XncpCommandId.GET_BUILD_STRING_RSP_ALT)
+class GetBuildStringRspAlt(GetBuildStringRsp):
+    pass
+
+@register_command(XncpCommandId.GET_FLOW_CONTROL_TYPE_RSP_ALT)
+class GetFlowControlTypeRspAlt(GetFlowControlTypeRsp):
+    pass
 
 @register_command(XncpCommandId.UNKNOWN)
 class Unknown(XncpCommandPayload):
     pass
-
-@register_command(XncpCommandId.GET_BUILD_STRING_RSP2)
-class GetBuildStringRsp2(GetBuildStringRsp):                          
-    pass 
