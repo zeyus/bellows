@@ -44,6 +44,8 @@ class XncpCommandId(t.enum16):
     SET_SOURCE_ROUTE_RSP = SET_SOURCE_ROUTE_REQ | 0x8000
     GET_MFG_TOKEN_OVERRIDE_RSP = GET_MFG_TOKEN_OVERRIDE_REQ | 0x8000
     GET_BUILD_STRING_RSP = GET_BUILD_STRING_REQ | 0x8000
+    # Hacky fix ?!
+    GET_BUILD_STRING_RSP2 = 0x0100
     GET_FLOW_CONTROL_TYPE_RSP = GET_FLOW_CONTROL_TYPE_REQ | 0x8000
 
     UNKNOWN = 0xFFFF
@@ -164,3 +166,7 @@ class GetFlowControlTypeRsp(XncpCommandPayload):
 @register_command(XncpCommandId.UNKNOWN)
 class Unknown(XncpCommandPayload):
     pass
+
+@register_command(XncpCommandId.GET_BUILD_STRING_RSP2)
+class GetBuildStringRsp2(GetBuildStringRsp):                          
+    pass 
